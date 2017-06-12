@@ -18,6 +18,8 @@ struct PacketDump {
      */
     const char *filename;
     
+    const char *readfile;
+    
     /**
      * Maximum number of bytes in a file before it is rotated. For
      * compressed files, this is the maximum number after

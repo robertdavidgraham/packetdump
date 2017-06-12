@@ -100,6 +100,7 @@ capture_thread(const struct PacketDump *conf)
     ssize_t total_bytes_written = 0;
     time_t rotate_time = 0;
     size_t total_file_count = 0;
+    char *newfilename = 0;
     
 
     /*
@@ -145,7 +146,6 @@ capture_thread(const struct PacketDump *conf)
          */
     again:
         if (out == NULL) {
-            char *newfilename;
             
             newfilename = morph_filename(conf, hdr->ts.tv_sec, total_file_count);
             LOG(0, "%s: opening new file\n", newfilename);
@@ -156,15 +156,21 @@ capture_thread(const struct PacketDump *conf)
             }
             rotate_time = next_rotate_time(hdr->ts.tv_sec, (unsigned)conf->rotate_seconds, 0);
             total_bytes_written = 0;
+            total_packets_written = 0;
             total_file_count++;
-            free(newfilename);
         }
         
         /*
          * Rotate the old capture file if necessary
          */
         if ((conf->rotate_size && total_bytes_written >= conf->rotate_size) || hdr->ts.tv_sec >= rotate_time) {
+            LOG(0, "%s: file#%u, wrote %llu bytes, wrote %llu packets\n",
+                newfilename,
+                (unsigned)total_file_count,
+                total_bytes_written,
+                total_packets_written);
             pcapfile_close(out);
+            free(newfilename);
             out = NULL;
             goto again;
         }
@@ -255,6 +261,7 @@ int main(int argc, char *argv[])
 {
     struct PacketDump conf[1] = {0};
     unsigned statuscount = 0;
+    char errbuf[PCAP_ERRBUF_SIZE];
  
     fprintf(stderr, "--- packetdump/1.0 by Robert Graham ---\n");
     
@@ -269,6 +276,9 @@ int main(int argc, char *argv[])
     }
     read_configuration(argc, argv, conf);
     
+    if (conf->ifname == 0)
+        conf->ifname = PCAP.lookupdev(errbuf);
+
     /*
      * trap <ctrl-c> to pause
      */
