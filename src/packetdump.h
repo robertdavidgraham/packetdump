@@ -18,7 +18,13 @@ struct PacketDump {
      */
     const char *filename;
     
-    const char *readfile;
+    /**
+     * Instead of reading from the network, we can read from one or more
+     * files. This is useful for decompressing previously captured files,
+     * splitting a large files into smaller parts, or combining many
+     * smaller captures into a larger capture.
+     */
+    const char **readfiles;
     
     /**
      * Maximum number of bytes in a file before it is rotated. For

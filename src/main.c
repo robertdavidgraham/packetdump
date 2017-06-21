@@ -2,8 +2,11 @@
 #include "config.h"
 #include "logger.h"
 #include "lz4/lz4.h"
+#include "pixie-threads.h"
+#include "pixie-timer.h"
 #include "rawsock-pcap.h"       /* dynamicly load pcap library */
 #include "rawsock-pcapfile.h"   /* write capture files */
+#include "readfiles.h"
 #include <limits.h>
 #include <signal.h>
 #include <stdio.h>
@@ -90,18 +93,167 @@ next_rotate_time(time_t last_rotate, unsigned period, unsigned offset)
 
 /***************************************************************************
  ***************************************************************************/
+struct WriteContext
+{
+    /**
+     * The configuration information that tells us how we should be writing
+     * packets.
+     */
+    const struct PacketDump *conf;
+    
+    /**
+     * Handle to the file where we are writing packets. This changes while we
+     * write packets whenever we need to rotate the file to a new one
+     */
+    struct PcapFile *fp;
+    
+    /**
+     * The current filename, which is based on morphing the configured
+     * filename, such as adding data/timestamp information
+     */
+    char *filename;
+    
+    /**
+     * The total number of files that we have processed
+     */
+    size_t total_file_count;
+    
+    /**
+     * The timestamp when we should next rotate the output file.
+     */
+    time_t rotate_time;
+    
+    /**
+     * The libpcap data-link value (Ethernet, WiFi, etc.)
+     */
+    int data_link;
+    
+    size_t file_bytes_written;
+    size_t file_packets_written;
+    
+};
+
+/***************************************************************************
+ * Write a single packet to the output file.
+ *
+ * Note that most of the logic in this function is about rotating the
+ * file when it gets too big, or when it exceeds a timestamp. Indeed,
+ * because of rotation issues, we don't even open the file for the first
+ * time until we are ready to write the first frame.
+ ***************************************************************************/
+static int
+handle_packet(struct WriteContext *ctx, const struct pcap_pkthdr *hdr, const void *buf)
+{
+    const struct PacketDump *conf = ctx->conf;
+    ssize_t bytes_written;
+    
+    /*
+     * open the output file
+     */
+again:
+    if (ctx->fp == NULL) {
+        
+        /* Create a new filename based on timestamp and filecount information */
+        ctx->filename = morph_filename(conf, hdr->ts.tv_sec, ctx->total_file_count);
+        LOG(0, "%s: opening new file\n", ctx->filename);
+        
+        /* Open the file */
+        ctx->fp = pcapfile_openwrite(ctx->filename, ctx->data_link, PCAPFILE_LZ4);
+        if (ctx->fp == NULL) {
+            /* This is bad. I don't know how to recover at this point */
+            fprintf(stderr, "%s: couldn't open file\n", ctx->filename);
+            return -1;
+        }
+        
+        /* Calculate the timestamp when the file should next be rotated.
+         * Note that his is aligned, so that if "hourly" rotation is desired,
+         * it'll rotate every hour on the hour  */
+        ctx->rotate_time = next_rotate_time(hdr->ts.tv_sec,
+                                            (unsigned)conf->rotate_seconds,
+                                            0);
+        ctx->file_bytes_written = 0;
+        ctx->file_packets_written = 0;
+        ctx->total_file_count++;
+    }
+    
+    /*
+     * Rotate the old capture file if necessary
+     */
+    if ((conf->rotate_size && ctx->file_bytes_written >= conf->rotate_size)
+        || (ctx->rotate_time && hdr->ts.tv_sec >= ctx->rotate_time)) {
+        LOG(0, "%s: file#%llu, wrote %llu bytes, wrote %llu packets\n",
+            ctx->filename,
+            ctx->total_file_count,
+            ctx->file_bytes_written,
+            ctx->file_packets_written);
+        pcapfile_close(ctx->fp);
+        ctx->fp = NULL;
+        free(ctx->filename);
+        ctx->filename = NULL;
+        goto again;
+    }
+    
+    
+    /*
+     * write the frame
+     */
+    bytes_written = pcapfile_writeframe(ctx->fp,
+                                        buf,
+                                        hdr->caplen,
+                                        hdr->len,
+                                        hdr->ts.tv_sec,
+                                        hdr->ts.tv_usec
+                                        );
+    if (bytes_written < 0) {
+        fprintf(stderr, "packet write failure\n");
+        return -1;
+    }
+    
+    ctx->file_bytes_written += bytes_written;
+    ctx->file_packets_written++;
+
+    return 0;
+}
+
+/***************************************************************************
+ ***************************************************************************/
+void statistics_thread(void *userdata)
+{
+    unsigned long long total_packets = 0;
+    unsigned long long total_drops = 0;
+    
+    while (!control_c_pressed) {
+        struct pcap_stat stats = {0};
+        size_t bytes_printed;
+        size_t i;
+        
+        pixie_usleep(100000 );
+        
+        PCAP.stats(userdata, &stats);
+        
+        total_packets = stats.ps_recv;
+        total_drops = stats.ps_drop + stats.ps_ifdrop;
+        
+        bytes_printed = fprintf(stderr, "packets=%llu, drops=%llu                 ",
+                                total_packets,
+                                total_drops);
+        for (i=0; i<bytes_printed; i++) {
+            fprintf(stderr, "\b");
+        }
+    }
+    
+}
+
+/***************************************************************************
+ ***************************************************************************/
 void
 capture_thread(const struct PacketDump *conf)
 {
     pcap_t *p;
     char errbuf[PCAP_ERRBUF_SIZE];
-    struct PcapFile *out = NULL;
     size_t total_packets_written = 0;
-    ssize_t total_bytes_written = 0;
-    time_t rotate_time = 0;
-    size_t total_file_count = 0;
-    char *newfilename = 0;
-    
+    struct WriteContext ctx[1] = {0};
+    size_t t;
 
     /*
      * open the network adapter
@@ -117,9 +269,20 @@ capture_thread(const struct PacketDump *conf)
         fprintf(stderr, "%s: %s\n", conf->ifname, errbuf);
         return;
     } else {
+        //fprintf(stderr, "%s: buffsize = %d\n", conf->ifname, PCAP.bufsize(p));
         fprintf(stderr, "%s: capture started\n", conf->ifname);
     }
     
+    /*
+     * Start a statistics thread
+     */
+    t = pixie_begin_thread(statistics_thread, 0, p);
+    
+    /*
+     * Setup the context
+     */
+    ctx->conf = conf;
+    ctx->data_link = PCAP.datalink(p);
     
     /*
      * now loop reading packets
@@ -127,7 +290,6 @@ capture_thread(const struct PacketDump *conf)
     while (!control_c_pressed) {
         struct pcap_pkthdr *hdr;
         const unsigned char *buf;
-        ssize_t bytes_written;
         int x;
         
         /*
@@ -141,63 +303,18 @@ capture_thread(const struct PacketDump *conf)
             break;
         }
         
-        /*
-         * open the output file
-         */
-    again:
-        if (out == NULL) {
-            
-            newfilename = morph_filename(conf, hdr->ts.tv_sec, total_file_count);
-            LOG(0, "%s: opening new file\n", newfilename);
-            out = pcapfile_openwrite(newfilename, PCAP.datalink(p), PCAPFILE_LZ4);
-            if (out == NULL) {
-                fprintf(stderr, "%s: couldn't open file\n", newfilename);
-                break;;
-            }
-            rotate_time = next_rotate_time(hdr->ts.tv_sec, (unsigned)conf->rotate_seconds, 0);
-            total_bytes_written = 0;
-            total_packets_written = 0;
-            total_file_count++;
-        }
-        
-        /*
-         * Rotate the old capture file if necessary
-         */
-        if ((conf->rotate_size && total_bytes_written >= conf->rotate_size) || hdr->ts.tv_sec >= rotate_time) {
-            LOG(0, "%s: file#%u, wrote %llu bytes, wrote %llu packets\n",
-                newfilename,
-                (unsigned)total_file_count,
-                total_bytes_written,
-                total_packets_written);
-            pcapfile_close(out);
-            free(newfilename);
-            out = NULL;
-            goto again;
-        }
-        
-        
-        /*
-         * write the frame
-         */
-        bytes_written = pcapfile_writeframe(out,
-                            buf,
-                            hdr->caplen,
-                            hdr->len,
-                            hdr->ts.tv_sec,
-                            hdr->ts.tv_usec
-                            );
-        if (bytes_written < 0) {
-            fprintf(stderr, "packet write failure\n");
+        x = handle_packet(ctx, hdr, buf);
+        if (x < 0)
             break;
-        }
-        total_bytes_written += bytes_written;
-        total_packets_written++;
     }
     
+    pixie_thread_join(t);
     fprintf(stderr, "read %u packets\n", (unsigned)total_packets_written);
     
-    if (out)
-        pcapfile_close(out);
+    if (ctx->fp)
+        pcapfile_close(ctx->fp);
+    if (ctx->filename)
+        free(ctx->filename);
     if (p)
         PCAP.close(p);
 }
@@ -231,33 +348,48 @@ rawsock_list_adapters(void)
 {
     pcap_if_t *alldevs;
     char errbuf[PCAP_ERRBUF_SIZE];
+    int x;
+    int index;
+    const pcap_if_t *d;
     
-    if (PCAP.findalldevs(&alldevs, errbuf) != -1) {
-        int i;
-        const pcap_if_t *d;
-        i=0;
-        
-        if (alldevs == NULL) {
-            fprintf(stderr, "ERR:libpcap: no adapters found, are you sure you are root?\n");
-        }
-        /* Print the list */
-        for(d=alldevs; d; d=PCAP.dev_next(d)) {
-            fprintf(stderr, " %d  %s \t", i++, PCAP.dev_name(d));
-            if (PCAP.dev_description(d))
-                fprintf(stderr, "(%s)\n", PCAP.dev_description(d));
-            else
-                fprintf(stderr, "(No description available)\n");
-        }
-        fprintf(stderr,"\n");
-        PCAP.freealldevs(alldevs);
-    } else {
+    /*
+     * Get the list of network adapters
+     */
+    x = PCAP.findalldevs(&alldevs, errbuf);
+    if (x < 0) {
         fprintf(stderr, "%s\n", errbuf);
+        return;
     }
+    if (alldevs == NULL) {
+        fprintf(stderr, "ERR:libpcap: no adapters found, are you sure you are root?\n");
+        return;
+    }
+
+    /* 
+     * Print the list, with a numeric index
+     */
+    index = 0;
+    for(d=alldevs; d; d=PCAP.dev_next(d)) {
+        fprintf(stderr, " %d  %s \t", index++, PCAP.dev_name(d));
+        if (PCAP.dev_description(d))
+            fprintf(stderr, "(%s)\n", PCAP.dev_description(d));
+        else
+            fprintf(stderr, "(No description available)\n");
+    }
+    fprintf(stderr,"\n");
+    
+    
+    /*
+     * Free the memory. Not really necessary, since we are going to exit
+     * immediately anyway.
+     */
+    PCAP.freealldevs(alldevs);
 }
 
 /***************************************************************************
  ***************************************************************************/
-int main(int argc, char *argv[])
+int
+main(int argc, char *argv[])
 {
     struct PacketDump conf[1] = {0};
     unsigned statuscount = 0;
@@ -306,6 +438,13 @@ int main(int argc, char *argv[])
     if (conf->is_iflist) {
         rawsock_list_adapters();
         statuscount++;
+    }
+    if (statuscount)
+        return 1;
+    
+    if (conf->readfiles) {
+        read_files(conf);
+        return 0;
     }
     
     /*

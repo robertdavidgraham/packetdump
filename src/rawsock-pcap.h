@@ -13,9 +13,16 @@
 #ifndef RAWSOCK_PCAP_H
 #define RAWSOCK_PCAP_H
 #include <stdio.h>
-//#include <pcap/pcap.h>
 
+#ifdef STATICPCAP
+#include <pcap/pcap.h>
+#endif
 
+#ifndef STATICPCAP
+enum {
+    DLT_EN10MB = 1,
+    DLT_RAW = 101,
+};
 
 /* Including the right ".h" file to define "timeval" is difficult, so instead
  * so instead we are simply going to define our own structure. This should
@@ -59,36 +66,60 @@ struct pcap_pkthdr {
 #endif
 };
 
+struct pcap_stat {
+    unsigned ps_recv;		/* number of packets received */
+    unsigned ps_drop;		/* number of packets dropped */
+    unsigned ps_ifdrop;	/* drops by interface -- only supported on some platforms */
+#ifdef WIN32
+    unsigned ps_capt;		/* number of packets that reach the application */
+    unsigned ps_sent;		/* number of packets sent by the server on the network */
+    unsigned ps_netdrop;	/* number of packets lost on the network */
+#endif /* _WIN32 */
+};
+
+#endif /*STATICPCAP*/
 
 /*
  * This block is for function declarations. Consult the libpcap
  * documentation for what these functions really mean
  */
 typedef void        (*PCAP_HANDLE_PACKET)(unsigned char *v_seap, const struct pcap_pkthdr *framehdr, const unsigned char *buf);
-typedef void        (*PCAP_CLOSE)(void *hPcap);
-typedef unsigned    (*PCAP_DATALINK)(void *hPcap);
-typedef unsigned    (*PCAP_DISPATCH)(void *hPcap, unsigned how_many_packets, PCAP_HANDLE_PACKET handler, void *handle_data);
-typedef int         (*PCAP_FINDALLDEVS)(pcap_if_t **alldevs, char *errbuf);
-typedef const char *(*PCAP_LIB_VERSION)(void);
-typedef char *      (*PCAP_LOOKUPDEV)(char *errbuf);
-typedef int         (*PCAP_MAJOR_VERSION)(void *p);
-typedef int         (*PCAP_MINOR_VERSION)(void *p);
-typedef void *      (*PCAP_OPEN_LIVE)(const char *devicename, unsigned snap_length, unsigned is_promiscuous, unsigned read_timeout, char *errbuf);
-typedef void        (*PCAP_FREEALLDEVS)(pcap_if_t *alldevs);
-typedef void *      (*PCAP_GET_AIRPCAP_HANDLE)(void *p);
-typedef unsigned    (*AIRPCAP_SET_DEVICE_CHANNEL)(void *p, unsigned channel);
-typedef unsigned    (*CAN_TRANSMIT)(const char *devicename);
-typedef pcap_t *    (*PCAP_OPEN_OFFLINE)(const char *fname, char *errbuf);
-typedef int         (*PCAP_SENDPACKET)(pcap_t *p, const unsigned char *buf, int size);
-typedef const unsigned char *
-                    (*PCAP_NEXT)(pcap_t *p, struct pcap_pkthdr *h);
-typedef int         (*PCAP_NEXT_EX)(pcap_t *p, struct pcap_pkthdr **h, const unsigned char **buf);
-typedef int         (*PCAP_SETDIRECTION)(pcap_t *, pcap_direction_t);
-typedef const char *(*PCAP_DATALINK_VAL_TO_NAME)(int dlt);
-typedef void        (*PCAP_PERROR)(pcap_t *p, const char *prefix);
-typedef const char *(*PCAP_DEV_NAME)(const pcap_if_t *dev);
-typedef const char *(*PCAP_DEV_DESCRIPTION)(const pcap_if_t *dev);
-typedef const pcap_if_t *(*PCAP_DEV_NEXT)(const pcap_if_t *dev);
+
+typedef void        (*PCAP_close)(pcap_t *hPcap);
+typedef int         (*PCAP_datalink)(pcap_t *hPcap);
+typedef const char *(*PCAP_datalink_val_to_name)(int dlt);
+typedef int         (*PCAP_dispatch)(pcap_t *hPcap, int how_many_packets, PCAP_HANDLE_PACKET handler, unsigned char *handle_data);
+typedef int         (*PCAP_findalldevs)(pcap_if_t **alldevs, char *errbuf);
+typedef void        (*PCAP_freealldevs)(pcap_if_t *alldevs);
+typedef const char *(*PCAP_lib_version)(void);
+typedef char *      (*PCAP_lookupdev)(char *errbuf);
+typedef int         (*PCAP_major_version)(pcap_t *p);
+typedef int         (*PCAP_minor_version)(pcap_t *p);
+typedef const unsigned char *(*PCAP_next)(pcap_t *p, struct pcap_pkthdr *h);
+typedef int         (*PCAP_next_ex)(pcap_t *p, struct pcap_pkthdr **h, const unsigned char **buf);
+typedef pcap_t *    (*PCAP_open_live)(const char *, int, int, int, char *);
+typedef pcap_t *    (*PCAP_open_offline)(const char *fname, char *errbuf);
+typedef void        (*PCAP_perror)(pcap_t *p, const char *prefix);
+typedef int         (*PCAP_sendpacket)(pcap_t *p, const unsigned char *buf, int size);
+typedef int         (*PCAP_setdirection)(pcap_t *, pcap_direction_t);
+typedef int         (*PCAP_stats)(pcap_t *p, struct pcap_stat *ps);
+
+/*
+ * New PCAP
+ */
+typedef pcap_t	*(*PCAP_create)(const char *, char *);
+typedef int	(*PCAP_set_snaplen)(pcap_t *, int);
+typedef int	(*PCAP_set_promisc)(pcap_t *, int);
+typedef int	(*PCAP_can_set_rfmon)(pcap_t *);
+typedef int	(*PCAP_set_rfmon)(pcap_t *, int);
+typedef int	(*PCAP_set_timeout)(pcap_t *, int);
+typedef int	(*PCAP_set_buffer_size)(pcap_t *, int);
+typedef int	(*PCAP_activate)(pcap_t *);
+
+typedef const char *(*PCAP_dev_name)(const pcap_if_t *dev);
+typedef const char *(*PCAP_dev_description)(const pcap_if_t *dev);
+typedef const pcap_if_t *(*PCAP_dev_next)(const pcap_if_t *dev);
+
 
 /*
  * PORTABILITY: Windows supports the "sendq" feature, and is really slow
@@ -98,10 +129,10 @@ typedef const pcap_if_t *(*PCAP_DEV_NEXT)(const pcap_if_t *dev);
 struct pcap_send_queue;
 typedef struct pcap_send_queue pcap_send_queue;
 
-typedef pcap_send_queue *(*PCAP_SENDQUEUE_ALLOC)(size_t size);
-typedef unsigned (*PCAP_SENDQUEUE_TRANSMIT)(pcap_t *p, pcap_send_queue *queue, int sync);
-typedef void (*PCAP_SENDQUEUE_DESTROY)(pcap_send_queue *queue);
-typedef int (*PCAP_SENDQUEUE_QUEUE)(pcap_send_queue *queue, const struct pcap_pkthdr *pkt_header, const unsigned char *pkt_data);
+typedef pcap_send_queue *(*PCAP_sendqueue_alloc)(size_t size);
+typedef unsigned (*PCAP_sendqueue_transmit)(pcap_t *p, pcap_send_queue *queue, int sync);
+typedef void (*PCAP_sendqueue_destroy)(pcap_send_queue *queue);
+typedef int (*PCAP_sendqueue_queue)(pcap_send_queue *queue, const struct pcap_pkthdr *pkt_header, const unsigned char *pkt_data);
 
 
 
@@ -114,42 +145,46 @@ struct PcapFunctions {
     unsigned status;
     unsigned errcode;
     
-    PCAP_CLOSE              close;
-    PCAP_DATALINK           datalink;
-    PCAP_DISPATCH           dispatch;
-    PCAP_FINDALLDEVS        findalldevs;
-    PCAP_FREEALLDEVS        freealldevs;
-    PCAP_LOOKUPDEV          lookupdev;
-    PCAP_LIB_VERSION        lib_version;
-    PCAP_MAJOR_VERSION      major_version;
-    PCAP_MINOR_VERSION      minor_version;
-    PCAP_OPEN_LIVE          open_live;
-    PCAP_GET_AIRPCAP_HANDLE get_airpcap_handle;
-    AIRPCAP_SET_DEVICE_CHANNEL airpcap_set_device_channel;
-    //AIRPCAP_SET_FCS_PRESENCE airpcap_set_fcs_presence;
-    //BOOL AirpcapSetFcsPresence(PAirpcapHandle AdapterHandle, BOOL IsFcsPresent);
+    PCAP_close              close;
+    PCAP_datalink           datalink;
+    PCAP_datalink_val_to_name datalink_val_to_name;
+    PCAP_dispatch           dispatch;
+    PCAP_findalldevs        findalldevs;
+    PCAP_freealldevs        freealldevs;
+    PCAP_lookupdev          lookupdev;
+    PCAP_lib_version        lib_version;
+    PCAP_major_version      major_version;
+    PCAP_minor_version      minor_version;
+    PCAP_next               next;
+    PCAP_next_ex            next_ex;
+    PCAP_open_live          open_live;
+    PCAP_open_offline       open_offline;
+    PCAP_perror             perror;
+    PCAP_sendpacket         sendpacket;
+    PCAP_setdirection       setdirection;
+    PCAP_stats              stats;
     
-    CAN_TRANSMIT            can_transmit;
-    
-    PCAP_OPEN_OFFLINE       open_offline;
-    PCAP_SENDPACKET         sendpacket;
-    PCAP_NEXT               next;
-    PCAP_NEXT_EX            next_ex;
-    PCAP_SETDIRECTION       setdirection;
-    PCAP_DATALINK_VAL_TO_NAME datalink_val_to_name;
-    PCAP_PERROR             perror;
-    
+    /* New PCAP */
+    PCAP_create             create;
+    PCAP_set_snaplen        set_snaplen;
+    PCAP_set_promisc        set_promisc;
+    PCAP_can_set_rfmon      can_set_rfmon;
+    PCAP_set_rfmon          set_rfmon;
+    PCAP_set_timeout        set_timeout;
+    PCAP_set_buffer_size    set_buffer_size;
+    PCAP_activate           activate;
+ 
     /* Accessor functions for opaque data structure, don't really
      * exist in libpcap */
-    PCAP_DEV_NAME           dev_name;
-    PCAP_DEV_DESCRIPTION    dev_description;
-    PCAP_DEV_NEXT           dev_next;
+    PCAP_dev_name           dev_name;
+    PCAP_dev_description    dev_description;
+    PCAP_dev_next           dev_next;
 
     /* Windows-only functions */
-	PCAP_SENDQUEUE_ALLOC	sendqueue_alloc;
-	PCAP_SENDQUEUE_TRANSMIT	sendqueue_transmit;
-	PCAP_SENDQUEUE_DESTROY	sendqueue_destroy;
-	PCAP_SENDQUEUE_QUEUE	sendqueue_queue;
+	PCAP_sendqueue_alloc	sendqueue_alloc;
+	PCAP_sendqueue_transmit	sendqueue_transmit;
+	PCAP_sendqueue_destroy	sendqueue_destroy;
+	PCAP_sendqueue_queue	sendqueue_queue;
 
 };
 

@@ -27,6 +27,7 @@
 */
 #include "logger.h"
 
+
 #if _MSC_VER==1200
 #pragma warning(disable:4115 4201)
 #include <winerror.h>
@@ -44,13 +45,11 @@
 #include <errno.h>
 
 #ifndef UNUSEDPARM
-#ifdef __GNUC__
 #define UNUSEDPARM(x) x=(x)
-#else
-#define UNUSEDPARM(x) x=(x)
-#endif
 #endif
 
+
+#ifndef STATICPCAP
 struct pcap_if {
     struct pcap_if *next;
     char *name;		/* name to hand to "pcap_open_live()" */
@@ -58,6 +57,14 @@ struct pcap_if {
     void  *addresses;
     unsigned flags;	/* PCAP_IF_ interface flags */
 };
+#endif
+
+
+static void *my_null(int x, ...)
+{
+    UNUSEDPARM(x);
+    return 0;
+}
 
 static void seterr(char *errbuf, const char *msg)
 {
@@ -69,279 +76,86 @@ static void seterr(char *errbuf, const char *msg)
     errbuf[length] = '\0';
 }
 
-static void null_PCAP_CLOSE(void *hPcap)
-{
 #ifdef STATICPCAP
-    pcap_close(hPcap);
-    return;
-#endif
-    UNUSEDPARM(hPcap);
-}
-
-
-static unsigned null_PCAP_DATALINK(void *hPcap)
-{
-#ifdef STATICPCAP
-    return pcap_datalink(hPcap);
-#endif
-    UNUSEDPARM(hPcap);
-    return 0;
-}
-
-
-static unsigned null_PCAP_DISPATCH(void *hPcap, unsigned how_many_packets, PCAP_HANDLE_PACKET handler, void *handle_data)
-{
-#ifdef STATICPCAP
-    return pcap_dispatch(hPcap, how_many_packets, handler, handle_data);
-#endif
-    UNUSEDPARM(hPcap);UNUSEDPARM(how_many_packets);UNUSEDPARM(handler);UNUSEDPARM(handle_data);
-    return 0;
-}
-
-
-static int null_PCAP_FINDALLDEVS(pcap_if_t **alldevs, char *errbuf)
-{
-#ifdef STATICPCAP
-    return pcap_findalldevs(alldevs, errbuf);
-#endif
-    *alldevs = 0;
-    seterr(errbuf, "libpcap not loaded");
-    return -1;
-}
-
-
-static void null_PCAP_FREEALLDEVS(pcap_if_t *alldevs)
-{
-#ifdef STATICPCAP
-    return pcap_freealldevs(alldevs);
-#endif
-    UNUSEDPARM(alldevs);
-    return;
-}
-
-
-static char *null_PCAP_LOOKUPDEV(char *errbuf)
-{
-#ifdef STATICPCAP
-    return pcap_lookupdev(errbuf);
-#endif
-    seterr(errbuf, "libpcap not loaded");
-    return "";
-}
-
-
-static void * null_PCAP_OPEN_LIVE(const char *devicename, unsigned snap_length, unsigned is_promiscuous, unsigned read_timeout, char *errbuf)
-{
-#ifdef STATICPCAP
-    return pcap_open_live(devicename, snap_length, is_promiscuous, read_timeout, errbuf);
-#endif
-    seterr(errbuf, "libpcap not loaded");
-    UNUSEDPARM(devicename);UNUSEDPARM(snap_length);UNUSEDPARM(is_promiscuous);UNUSEDPARM(read_timeout);
-    return NULL;
-}
-
-static int null_PCAP_MAJOR_VERSION(void *p)
-{
-#ifdef STATICPCAP
-    return pcap_major_version(p);
-#endif
-    UNUSEDPARM(p);
-    return 0;
-}
-
-
-static int null_PCAP_MINOR_VERSION(void *p)
-{
-#ifdef STATICPCAP
-    return pcap_minor_version(p);
-#endif
-    UNUSEDPARM(p);
-    return 0;
-}
-
-static const char *null_PCAP_LIB_VERSION(void)
-{
-#ifdef STATICPCAP
-    return pcap_lib_version();
-#endif
-    
-    return "stub/0.0";
-}
-
-#ifdef WIN32
-static void *null_PCAP_GET_AIRPCAP_HANDLE(void *p)
-{
-    UNUSEDPARM(p);
-    return NULL;
-}
-#endif
-
-#ifdef WIN32
-static unsigned null_AIRPCAP_SET_DEVICE_CHANNEL(void *p, unsigned channel)
-{
-    UNUSEDPARM(p);UNUSEDPARM(channel);
-    
-    return 0; /*0=failure, 1=success*/
-}
-#endif
-
-
-static unsigned null_CAN_TRANSMIT(const char *devicename)
-{
-#if WIN32
-    struct DeviceCapabilities {
-        unsigned AdapterId;		/* An Id that identifies the adapter model.*/
-        char AdapterModelName;	/* String containing a printable adapter model.*/
-        unsigned AdapterBus;	/* The type of bus the adapter is plugged to. */
-        unsigned CanTransmit;	/* TRUE if the adapter is able to perform frame injection.*/
-        unsigned CanSetTransmitPower; /* TRUE if the adapter's transmit power is can be specified by the user application.*/
-        unsigned ExternalAntennaPlug; /* TRUE if the adapter supports plugging one or more external antennas.*/
-        unsigned SupportedMedia;
-        unsigned SupportedBands;
-    } caps;
-    void * (*myopen)(const char *devicename, char *errbuf);
-    void (*myclose)(void *h);
-    unsigned (*mycapabilities)(void *h, struct DeviceCapabilities *caps);
-    
-    unsigned result = 0;
-    void *hAirpcap;
-    
-    
-    hAirpcap = LoadLibraryA("airpcap.dll");
-    if (hAirpcap == NULL)
-    return 0;
-    
-    
-    myopen = (void * (*)(const char *, char*))GetProcAddress(hAirpcap, "AirpcapOpen");
-    myclose = (void (*)(void*))GetProcAddress(hAirpcap, "AirpcapClose");
-    mycapabilities = (unsigned (*)(void*, struct DeviceCapabilities *))GetProcAddress(hAirpcap, "AirpcapGetDeviceCapabilities");
-    if (myopen && mycapabilities && myclose ) {
-        void *h = myopen(devicename, NULL);
-        if (h) {
-            if (mycapabilities(h, &caps)) {
-                result = caps.CanTransmit;
-            }
-            myclose(h);
-        }
-    }
-    
-    FreeLibrary(hAirpcap);
-    return result;
-#elif defined(__linux__)
-    return 1;
-#elif defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
-    return 1;
+#define DECLARESTUB(n) static PCAP_##n stub_##n = pcap_##n;
 #else
-#error unknown os
+#define DECLARESTUB(n) static PCAP_##n stub_##n = (PCAP_##n)my_null;
 #endif
-}
 
-struct PcapFunctions PCAP = {
-    0,0,0,0,0,
-    null_PCAP_CLOSE,
-};
+DECLARESTUB(close);
+DECLARESTUB(datalink);
+DECLARESTUB(dispatch);
+DECLARESTUB(findalldevs);
+DECLARESTUB(freealldevs);
+DECLARESTUB(lookupdev);
+DECLARESTUB(open_live);
+DECLARESTUB(major_version);
+DECLARESTUB(minor_version);
+DECLARESTUB(lib_version);
+DECLARESTUB(open_offline);
+DECLARESTUB(sendpacket);
+DECLARESTUB(next);
+DECLARESTUB(next_ex);
+DECLARESTUB(setdirection);
+DECLARESTUB(datalink_val_to_name);
+DECLARESTUB(perror);
+DECLARESTUB(stats);
 
 
-static void *my_null(int x, ...)
-{
-	UNUSEDPARM(x);
-    return 0;
-}
-static pcap_t *null_PCAP_OPEN_OFFLINE(const char *fname, char *errbuf)
-{
-#ifdef STATICPCAP
-    return pcap_open_offline(fname, errbuf);
-#endif
-    return my_null(2, fname, errbuf);
-}
-static int null_PCAP_SENDPACKET(pcap_t *p, const unsigned char *buf, int size)
-{
-#ifdef STATICPCAP
-    return pcap_sendpacket(p, buf, size);
-#endif
-    my_null(3, p, buf, size);
-	return 0;
-}
 
-static const unsigned char *null_PCAP_NEXT(pcap_t *p, struct pcap_pkthdr *h)
-{
-#ifdef STATICPCAP
-    return pcap_next(p, h);
-#endif
-    my_null(3, p, h);
-    return 0;
-}
-static int null_PCAP_NEXT_EX(pcap_t *p, struct pcap_pkthdr **pkt_header,
-                                              const unsigned char **pkt_data)
-{
-#ifdef STATICPCAP
-    return pcap_next_ex(p, pkt_header, pkt_data);
-#endif
-    my_null(3, p, pkt_header, pkt_data);
-    return 0;
-}
-
-static int null_PCAP_SETDIRECTION(pcap_t *p, pcap_direction_t d)
-{
-#ifdef STATICPCAP
-    return pcap_setdirection(p, d);
-#endif
-	my_null(2, p, d);
-    return 0;
-}
-static const char *null_PCAP_DATALINK_VAL_TO_NAME(int dlt)
-{
-#ifdef STATICPCAP
-    return pcap_datalink_val_toName(dlt);
-#endif
-	my_null(1, dlt);
-    return 0;
-}
-static void null_PCAP_PERROR(pcap_t *p, const char *prefix)
-{
-#ifdef STATICPCAP
-    pcap_perror(p, prefix);
-    return;
-#endif
-	UNUSEDPARM(p);
-	fprintf(stderr, "%s\n", prefix);
-    perror("pcap");
-}
-static const char *null_PCAP_DEV_NAME(const pcap_if_t *dev)
+static const char *stub_dev_name(const pcap_if_t *dev)
 {
     return dev->name;
 }
-static const char *null_PCAP_DEV_DESCRIPTION(const pcap_if_t *dev)
+static const char *stub_dev_description(const pcap_if_t *dev)
 {
     return dev->description;
 }
-static const pcap_if_t *null_PCAP_DEV_NEXT(const pcap_if_t *dev)
+static const pcap_if_t *stub_dev_next(const pcap_if_t *dev)
 {
     return dev->next;
 }
 
-static pcap_send_queue *null_PCAP_SENDQUEUE_ALLOC(size_t size)
+static pcap_send_queue *stub_sendqueue_alloc(size_t size)
 {
 	UNUSEDPARM(size);
 	return 0;
 }
-static unsigned null_PCAP_SENDQUEUE_TRANSMIT(pcap_t *p, pcap_send_queue *queue, int sync)
+static unsigned stub_sendqueue_transmit(pcap_t *p, pcap_send_queue *queue, int sync)
 {
 	my_null(3, p, queue, sync);
 	return 0;
 }
-static void null_PCAP_SENDQUEUE_DESTROY(pcap_send_queue *queue) 
+static void stub_sendqueue_destroy(pcap_send_queue *queue)
 {
 	my_null(1, queue);
 	UNUSEDPARM(queue);
 }
-static int null_PCAP_SENDQUEUE_QUEUE(pcap_send_queue *queue,
+static int stub_sendqueue_queue(pcap_send_queue *queue,
     const struct pcap_pkthdr *pkt_header,
     const unsigned char *pkt_data)
 {
 	my_null(4, queue, pkt_header, pkt_data);
 	return 0;
 }
+
+/*
+ * New API
+ */
+DECLARESTUB(create);
+DECLARESTUB(set_snaplen);
+DECLARESTUB(set_promisc);
+DECLARESTUB(can_set_rfmon);
+DECLARESTUB(set_rfmon);
+DECLARESTUB(set_timeout);
+DECLARESTUB(set_buffer_size);
+DECLARESTUB(activate);
+
+
+/****************************************************************************
+ *****************************************************************************/
+struct PcapFunctions PCAP = {0};
+
 
 /**
  * Runtime-load the libpcap shared-object or the winpcap DLL. We
@@ -430,10 +244,14 @@ if (pl->datalink == NULL) pl->func_err=1, pl->datalink = null_##PCAP_DATALINK;
         }
     }
     
-#define DOLINK(PCAP_DATALINK, datalink) \
-pl->datalink = (PCAP_DATALINK)dlsym(hLibpcap, "pcap_"#datalink); \
+#define DOLINK(DATALINK, datalink) \
+    pl->datalink = (PCAP_##DATALINK)dlsym(hLibpcap, "pcap_"#datalink); \
     if (pl->datalink == NULL) LOG(1, "pcap: pcap_%s: failed\n", #datalink); \
-    if (pl->datalink == NULL) pl->func_err=1, pl->datalink = null_##PCAP_DATALINK;
+    if (pl->datalink == NULL) pl->func_err=1, pl->datalink = stub_##DATALINK;
+#define DYNLINK(datalink) \
+    pl->datalink = (PCAP_##datalink)dlsym(hLibpcap, "pcap_"#datalink); \
+    if (pl->datalink == NULL) LOG(1, "pcap: pcap_%s: failed\n", #datalink); \
+    if (pl->datalink == NULL) pl->func_err=1, pl->datalink = stub_##datalink;
 #else
 #define DOLINK(PCAP_DATALINK, datalink) \
 pl->func_err=0, pl->datalink = null_##PCAP_DATALINK;
@@ -452,38 +270,47 @@ pl->func_err=0, pl->datalink = null_##PCAP_DATALINK;
     }
 #endif
     
+#ifdef STATICPCAP
+#define DYNLINK(n) PCAP.n = stub_##n
+#endif
     
-    
-    DOLINK(PCAP_CLOSE			, close);
-    DOLINK(PCAP_DATALINK		, datalink);
-    DOLINK(PCAP_DISPATCH		, dispatch);
-    DOLINK(PCAP_FINDALLDEVS		, findalldevs);
-    DOLINK(PCAP_FREEALLDEVS		, freealldevs);
-    DOLINK(PCAP_LIB_VERSION		, lib_version);
-    DOLINK(PCAP_LOOKUPDEV		, lookupdev);
-    DOLINK(PCAP_MAJOR_VERSION	, major_version);
-    DOLINK(PCAP_MINOR_VERSION	, minor_version);
-    DOLINK(PCAP_OPEN_LIVE		, open_live);
-    
-    DOLINK(PCAP_OPEN_OFFLINE    , open_offline);
-    DOLINK(PCAP_SENDPACKET      , sendpacket);
-    DOLINK(PCAP_NEXT            , next);
-    DOLINK(PCAP_NEXT_EX         , next_ex);
-    DOLINK(PCAP_SETDIRECTION    , setdirection);
-    DOLINK(PCAP_DATALINK_VAL_TO_NAME , datalink_val_to_name);
-    DOLINK(PCAP_PERROR          , perror);
+    DYNLINK(close);
+    DYNLINK(datalink);
+    DYNLINK(datalink_val_to_name);
+    DYNLINK(dispatch);
+    DYNLINK(findalldevs);
+    DYNLINK(freealldevs);
+    DYNLINK(lib_version);
+    DYNLINK(lookupdev);
+    DYNLINK(major_version);
+    DYNLINK(minor_version);
+    DYNLINK(next);
+    DYNLINK(next_ex);
+    DYNLINK(open_live);
+    DYNLINK(open_offline);
+    DYNLINK(perror);
+    DYNLINK(sendpacket);
+    DYNLINK(setdirection);
+    DYNLINK(stats);
 
-    DOLINK(PCAP_DEV_NAME        , dev_name);
-    DOLINK(PCAP_DEV_DESCRIPTION , dev_description);
-    DOLINK(PCAP_DEV_NEXT        , dev_next);
-
-	DOLINK(PCAP_SENDQUEUE_ALLOC		, sendqueue_alloc);
-	DOLINK(PCAP_SENDQUEUE_TRANSMIT	, sendqueue_transmit);
-	DOLINK(PCAP_SENDQUEUE_DESTROY	, sendqueue_destroy);
-	DOLINK(PCAP_SENDQUEUE_QUEUE		, sendqueue_queue);
-
+    DYNLINK(create);
+    DYNLINK(set_snaplen);
+    DYNLINK(set_promisc);
+    DYNLINK(can_set_rfmon);
+    DYNLINK(set_rfmon);
+    DYNLINK(set_timeout);
+    DYNLINK(set_buffer_size);
+    DYNLINK(activate);
     
-    pl->can_transmit = null_CAN_TRANSMIT;
+    DYNLINK(dev_name);
+    DYNLINK(dev_description);
+    DYNLINK(dev_next);
+
+	DYNLINK(sendqueue_alloc);
+	DYNLINK(sendqueue_transmit);
+	DYNLINK(sendqueue_destroy);
+	DYNLINK(sendqueue_queue);
+
     
     if (!pl->func_err)
         pl->is_available = 1;

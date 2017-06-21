@@ -9,6 +9,7 @@ enum {
     CONF_BOOL,
     CONF_NOTBOOL,
     CONF_STR,
+    CONF_FILES,
 };
 enum {
     CONF_NOECHO = 1,
@@ -50,6 +51,8 @@ static const struct ConfigurationOptions options[] = {
     {"version",     CONF_BOOL,  VAR(is_version), CONF_NOECHO},
     {"list-interfaces",CONF_BOOL,VAR(is_iflist), CONF_NOECHO},
     {"echo",        CONF_BOOL,  VAR(is_echo), CONF_NOECHO},
+    
+    {"readfile",    CONF_FILES, VAR(readfiles)},
     {0}
 };
 
@@ -62,6 +65,7 @@ echo_configuration(FILE *fp, struct PacketDump *conf)
     uint64_t *num;
     char *b;
     char **str;
+    char ***files;
 
     for (i=0; options[i].name; i++) {
         if (options[i].flags & CONF_NOECHO)
@@ -85,6 +89,20 @@ echo_configuration(FILE *fp, struct PacketDump *conf)
             case CONF_STR:
                 str = MEMBERAT(conf, options[i].offset, char *);
                 fprintf(fp, "%s\n", (*str)?(*str):"");
+                break;
+            case CONF_FILES:
+                files = MEMBERAT(conf, options[i].offset, char **);
+                if (*files) {
+                    size_t j;
+                    
+                    for (j=0; (*files)[j]; j++) {
+                        char *file = (*files)[j];
+                        if (j)
+                            fprintf(fp, "%s = ", options[i].name);
+                        fprintf(fp, "%s\n", file);
+                    }
+    
+                }
                 break;
             default:
                 fprintf(fp, "<unimplemented option>\n");
@@ -150,6 +168,20 @@ is_option_boolean(const char *name)
     }
     return 0;
 }
+static int
+is_option_filelist(const char *name)
+{
+    size_t i;
+    for (i=0; options[i].name; i++) {
+        if (strcmp(options[i].name, name)==0) {
+            if (options[i].type == CONF_FILES)
+                return 1;
+            else
+                return 0;
+        }
+    }
+    return 0;
+}
 
 
 /***************************************************************************
@@ -160,8 +192,10 @@ parse_option(const char *name, const char *value, struct PacketDump *conf)
     uint64_t *num;
     char *b;
     char **str;
+    char ***files;
     int is_valid;
     size_t i;
+    size_t count;
     
     /*
      * Find the template for the option
@@ -205,7 +239,18 @@ parse_option(const char *name, const char *value, struct PacketDump *conf)
             else
                 *str = strdup(value);
             break;
-            
+        case CONF_FILES:
+            files = MEMBERAT(conf, options[i].offset, char **);
+            if (*files == NULL) {
+                *files = malloc(sizeof(char*) * 1);
+                (*files)[0] = NULL;
+            }
+            for (count=0; (*files)[count]; count++)
+                ;
+            *files = realloc(*files, sizeof(char*) * (count + 2));
+            (*files)[count++] = strdup(value);
+            (*files)[count] = NULL;
+            break;
         default:
             fprintf(stderr, "internal error: option type unknown\n");
             exit(1);
@@ -264,7 +309,20 @@ read_configuration(int argc, char **argv, struct PacketDump *conf)
                 } else
                     value = argv[++i];
             }
+            /*
+             * Now parse the name=value
+             */
             parse_option(name, value, conf);
+            
+            /* Do special processing for file-lists, such as when we
+             * read in a list of files on input. Because of shell filename
+             * wildcard expansion, we many ahve a long list of filenames
+             * after the option name */
+            if (is_option_filelist(name)) {
+                while (i < argc && argv[i+1][0] != '-')
+                    parse_option(name, argv[++i], conf);
+            }
+            
             free(name);
         } else if (argv[i][0] == '-') {
             const char *name;
@@ -302,7 +360,19 @@ read_configuration(int argc, char **argv, struct PacketDump *conf)
                 value = argv[++i];
             }
             
+            /*
+             * Now parse the name=value
+             */
             parse_option(name, value, conf);
+            
+            /* Do special processing for file-lists, such as when we
+             * read in a list of files on input. Because of shell filename
+             * wildcard expansion, we many ahve a long list of filenames
+             * after the option name */
+            if (is_option_filelist(name)) {
+                while (i < argc && argv[i+1][0] != '-')
+                    parse_option(name, argv[++i], conf);
+            }
         }
     }
     
